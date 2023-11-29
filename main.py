@@ -1,122 +1,130 @@
 import cv2
 import mediapipe as mp
+import numpy as np
 import random
 import time
-import numpy as np
 
-# Initialize MediaPipe Hand module
+# Initialize Mediapipe hands module
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands()
 
-# Initialize screen dimensions
-screen_width, screen_height = 800, 600
+# Set up video capture
+cap = cv2.VideoCapture(0)
 
-# Initialize puck parameters
-puck_radius = 20
-puck_pos = [screen_width // 2, screen_height // 2]
-puck_velocity = [5, 5]
+# Set up game parameters
+radius = 20
+paddle_radius = radius
+target_radius = 30
+puck_color = (255, 255, 255)
+paddle_color = (0, 0, 255)
+score_color = (255, 255, 255)
+font = cv2.FONT_HERSHEY_SIMPLEX
+font_scale = 1
+font_thickness = 2
 
-# Initialize paddle parameters
-paddle_width, paddle_height = 100, 20
-paddle_pos = [screen_width // 2 - paddle_width // 2, screen_height - 2 * paddle_height]
-
-# Initialize game variables
+# Game score and time limit
 score = 0
-time_limit = 60  # in seconds
+time_limit = 90  # in seconds
 start_time = time.time()
 
-# Initialize targets
+# Load target image
+target_image = cv2.imread('/home/jaypopos/Documents/code/cv_assignment/ERC-Assignment-4/target.png', cv2.IMREAD_UNCHANGED)
+target_image = cv2.resize(target_image, (2 * target_radius, 2 * target_radius))
+
+# Initialize puck position and velocity
+puck_position = np.array([320, 240])
+puck_velocity = np.array([5, 5])
+
+# Initialize paddle position
+paddle_position = np.array([400, 240])
+
+# Initialize target positions
 num_targets = 5
-targets = [(random.randint(50, screen_width - 50), random.randint(50, screen_height - 50)) for _ in range(num_targets)]
+targets = [np.array([random.randint(50, 590), random.randint(50, 430)]) for _ in range(num_targets)]
+targets_hit = [False] * num_targets
 
-# Initialize OpenCV window
-cv2.namedWindow("Virtual Air Hockey", cv2.WINDOW_NORMAL)
 
-# Function to check collision between two circles
-def is_collision_circle(circle1, circle2):
-    distance = np.linalg.norm(np.array(circle1) - np.array(circle2))
-    return distance < circle1[2] + circle2[2]
-
-# Function to initialize targets
-def initialize_targets():
-    return [(random.randint(50, screen_width - 50), random.randint(50, screen_height - 50)) for _ in range(num_targets)]
-
-while True:
-    # Capture video from the webcam
-    cap = cv2.VideoCapture(0)
+while cap.isOpened():
     ret, frame = cap.read()
+    if not ret:
+        break
 
-    # Flip the frame horizontally for a later selfie-view display
     frame = cv2.flip(frame, 1)
-
-    # Convert the BGR image to RGB
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    # Perform hand tracking using Mediapipe
     results = hands.process(rgb_frame)
 
-    # Update paddle position based on hand tracking
     if results.multi_hand_landmarks:
         hand_landmarks = results.multi_hand_landmarks[0]
-        index_finger_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-        paddle_pos[0] = int(index_finger_tip.x * screen_width)
-        paddle_pos[1] = int(index_finger_tip.y * screen_height)
 
-    # Update puck position
-    puck_pos[0] += puck_velocity[0]
-    puck_pos[1] += puck_velocity[1]
+        # Extract x, y coordinates of the index finger
+        index_finger_x = int(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP].x * frame.shape[1])
+        index_finger_y = int(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP].y * frame.shape[0])
+
+        # Move the circular paddle based on index finger movement
+        paddle_position[0] += (index_finger_x - paddle_position[0]) / 5
+        paddle_position[1] += (index_finger_y - paddle_position[1]) / 5
+
+    # Update puck position based on velocity
+    puck_position = (puck_position + puck_velocity)
 
     # Check for collisions with walls
-    if puck_pos[0] - puck_radius < 0 or puck_pos[0] + puck_radius > screen_width:
-        puck_velocity[0] = -puck_velocity[0]
-    if puck_pos[1] - puck_radius < 0 or puck_pos[1] + puck_radius > screen_height:
-        puck_velocity[1] = -puck_velocity[1]
+    if puck_position[0] - radius < 0 or puck_position[0] + radius > frame.shape[1]:
+        puck_velocity[0] *= -1
+    if puck_position[1] - radius < 0 or puck_position[1] + radius > frame.shape[0]:
+        puck_velocity[1] *= -1
 
-    # Check for collision with paddle
-    if is_collision_circle((puck_pos[0], puck_pos[1], puck_radius),
-                            (paddle_pos[0] + paddle_width // 2, paddle_pos[1] + paddle_height // 2, puck_radius)):
-        puck_velocity[1] = -puck_velocity[1]
+    # Check for collision with the circular paddle
+    distance = np.linalg.norm(paddle_position - puck_position)
+    if distance < 2 * radius:
+        # Collision occurred, reverse puck's vertical velocity
+        puck_velocity[1] *= -1
 
-    # Check for collision with targets
-    for i, target in enumerate(targets):
-        if is_collision_circle((puck_pos[0], puck_pos[1], puck_radius),
-                                (target[0], target[1], 20)):  # assuming target radius is 20
-            score += 1
-            targets.pop(i)
-            targets += initialize_targets()
-            puck_velocity[0] *= 1.2
-            puck_velocity[1] *= 1.2
+    # Check for collision with the targets
+    for i in range(num_targets):
+        if not targets_hit[i]:
+            target_distance = np.linalg.norm(targets[i] - puck_position)
+            if target_distance < target_radius + radius:
+                # Player scores a point, increase puck's velocity, and mark the target as hit
+                score += 1
+                puck_velocity = (puck_velocity*1.2)
+                targets_hit[i] = True
 
-    # Display the game elements on the screen
-    cv2.circle(frame, (puck_pos[0], puck_pos[1]), puck_radius, (255, 255, 255), -1)
-    cv2.rectangle(frame, (paddle_pos[0], paddle_pos[1]),
-                  (paddle_pos[0] + paddle_width, paddle_pos[1] + paddle_height), (0, 255, 0), -1)
-    for target in targets:
-        cv2.circle(frame, (target[0], target[1]), 20, (0, 0, 255), -1)
+    # Draw the puck, circular paddle, and targets on the frame
+    for i in range(num_targets):
+        if not targets_hit[i]:
+            x, y = int(targets[i][0]) - target_radius, int(targets[i][1]) - target_radius
+            alpha_s = target_image[:, :, 3] / 255.0
+            alpha_l = 1.0 - alpha_s
+            for c in range(0, 3):
+                frame[y:y + 2 * target_radius, x:x + 2 * target_radius, c] = (
+                        alpha_s * target_image[:, :, c] + alpha_l * frame[y:y + 2 * target_radius, x:x + 2 * target_radius, c])
 
-    # Display the score and timer on the screen
-    elapsed_time = time.time() - start_time
-    remaining_time = max(0, int(time_limit - elapsed_time))
-    cv2.putText(frame, f"Score: {score}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    cv2.putText(frame, f"Time: {remaining_time}s", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    cv2.circle(frame, tuple(puck_position.astype(int)), radius, puck_color, -1)
+    cv2.circle(frame, tuple(paddle_position.astype(int)), paddle_radius, paddle_color, -1)
 
-    # Check for game over conditions
-    if not targets or elapsed_time > time_limit:
-        # Display game over message with the final score
-        cv2.putText(frame, f"Game Over! Final Score: {score}", (screen_width // 4, screen_height // 2),
-                    cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 4)
-        cv2.imshow("Virtual Air Hockey", frame)
-        cv2.waitKey(3000)  # Display the game over message for 3 seconds
+    # Display the score
+    cv2.putText(frame, f"Score: {score}", (10, 30), font, font_scale, score_color, font_thickness, cv2.LINE_AA)
+
+    # Display the time remaining
+    elapsed_time = int(time.time() - start_time)
+    remaining_time = max(0, time_limit - elapsed_time)
+    cv2.putText(frame, f"Time: {remaining_time}s", (10, 70), font, font_scale, score_color, font_thickness, cv2.LINE_AA)
+
+    # Display game over message if time limit is reached or all targets are hit
+    if remaining_time == 0 or all(targets_hit):
+        game_over_message = "Game Over! Your Final Score: " + str(score)
+        if all(targets_hit):
+            game_over_message = "Congratulations! " + game_over_message
+        cv2.putText(frame, game_over_message, (50, frame.shape[0] // 2), font, font_scale, score_color, font_thickness,
+                    cv2.LINE_AA)
+
+    # Display the frame
+    cv2.imshow('Hand-Controlled Game', frame)
+
+    # Exit the game if 'q' is pressed
+    if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-    # Show the frame
-    cv2.imshow("Virtual Air Hockey", frame)
-
-    # Check for user input to quit the game
-    key = cv2.waitKey(1)
-    if key == ord('q'):
-        break
-
-# Release resources
+# Release the video capture and close all windows
 cap.release()
 cv2.destroyAllWindows()
